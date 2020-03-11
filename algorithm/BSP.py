@@ -5,7 +5,6 @@ from matplotlib import pyplot as plt
 from mnist.Net import ConvNet
 from ps.Server import ParameterServer
 from ps.Worker import Worker
-import torch.nn.functional as F
 
 
 class BSP:
@@ -30,7 +29,7 @@ class BSP:
         初始化ps和workers
         '''
         ps = ParameterServer.remote(1e-2)
-        workers = [Worker.remote(i, i * self.sleep_gap, self.data_loaders[i]) for i in range(self.num_workers)]
+        workers = [Worker.remote(i, (i + 1) * self.sleep_gap, self.data_loaders[i]) for i in range(self.num_workers)]
 
         ###########################################################################
         # We'll also instantiate a model on the driver process to evaluate the test

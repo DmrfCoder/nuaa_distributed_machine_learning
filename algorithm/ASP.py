@@ -8,12 +8,13 @@ from ps.Worker import Worker
 
 
 class ASP:
-    def __init__(self, sleep_gap, data_loaders, num_workers, dataset_factory, iterations):
+    def __init__(self, sleep_gap, data_loaders, num_workers, dataset_factory, iterations, improve_data=False):
         self.sleep_gap = sleep_gap
         self.data_loaders = data_loaders
         self.num_workers = num_workers
         self.dataset_factory = dataset_factory
         self.iterations = iterations
+        self.improve_data = improve_data
 
     def execute(self, show_plt=True):
         ###########################################################################
@@ -27,7 +28,10 @@ class ASP:
 
         ray.init(ignore_reinit_error=True)
         ps = ParameterServer.remote(1e-2)
-        workers = [Worker.remote(i, i * self.sleep_gap, self.data_loaders[i]) for i in range(self.num_workers)]
+        if self.improve_data:
+            cumputing_powper = [(i + 1) * self.sleep_gap for i in range(self.num_workers)]
+            self.data_loaders = self.dataset_factory.build_dataset_with_power(cumputing_powper, shuffle=True)
+        workers = [Worker.remote(i, (i + 1) * self.sleep_gap, self.data_loaders[i]) for i in range(self.num_workers)]
         model = ConvNet()
         test_loader = self.dataset_factory.get_test_loader()
         ###########################################################################

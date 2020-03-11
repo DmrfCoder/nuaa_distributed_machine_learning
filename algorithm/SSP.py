@@ -21,7 +21,7 @@ class SSP:
         plt_y = []
         ray.init(ignore_reinit_error=True)
         ps = ParameterServer.remote(1e-2)
-        workers = [Worker.remote(i, int(i * self.sleep_gap), self.data_loaders[i]) for i in
+        workers = [Worker.remote(i, (i + 1) * self.sleep_gap, self.data_loaders[i]) for i in
                    range(self.num_workers)]
         model = ConvNet()
         test_loader = self.dataset_factory.get_test_loader()
