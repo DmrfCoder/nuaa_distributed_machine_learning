@@ -37,7 +37,7 @@ class CustomDataset(data.Dataset):
 class DatasetFactory:
     def __init__(self, data_root):
         self.root = data_root
-
+    #如果shuffle为true表示数据为非独立同分布，如果shuffle为false表示数据为独立同分布
     def build_dataset(self, num_worker, shuffle=False):
         print('build data')
         mnist_transforms = transforms.Compose(
