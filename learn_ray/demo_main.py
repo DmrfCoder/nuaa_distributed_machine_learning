@@ -14,11 +14,13 @@ w4 = Worker.remote()
 w5 = Worker.remote()
 w6 = Worker.remote()
 workers = [w1, w2, w3, w4, w5, w6]
-workers[2].demo.remote(2,time.time())
-# gradients_id = []
-# for i in range(6):
-#     gradients_id.append(workers[i].demo.remote(i,time.time()))
-time.sleep(5)
+# workers[2].demo.remote(2,time.time())
+gradients_id = []
+for i in range(1000):
+    time.sleep(0.5)
+
+    for i in range(6):
+        gradients_id.append(workers[i].demo.remote(i, time.time()))
 # ray.get(gradients_id[3])
 ray.shutdown()
 '''

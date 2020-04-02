@@ -30,6 +30,8 @@ class Worker(object):
         self.time_costs.append(current_time - start_time)
         self.time_stamp.append(current_time)
         self.time_end.append(current_time)
+        #print('接收到参数,耗时：',current_time - start_time)
+
         if self.computed_count == self.iterations:
             return None
         if weights is not None:  # 如果weights为None即表示本次不进行通信，使用旧的本地模型继续进行计算
