@@ -1,7 +1,32 @@
-computing_power = [0.1, 0.2, 0.3, 0.4]
-real_computing_power = [1 / item_power for item_power in computing_power]
-sum_power = sum(real_computing_power)
-power = [item_power / sum_power for item_power in real_computing_power]
-length = [int(100 * item_power) for item_power in power]
+'''
 
-print(length)
+1 2 3 4 5 6 7 8 9
+目标：item_i计算count_i次之后，时间差不能大于1
+传统BSP：
+1 等9
+2 等7
+.
+.
+.
+8 等1
+9 等0
+中位数5
+5*2=10
+
+改进目标：
+1 计算10次
+2 计算5次
+3 计算3次 等1
+4 计算2次 等2
+5 计算2次
+6 计算1次 等4
+7 计算1次 等3
+8 计算1次 等2
+9 计算1次 等1
+
+
+'''
+time_list = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+print(time_list)
+
+

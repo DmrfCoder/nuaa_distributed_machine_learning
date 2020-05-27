@@ -1,3 +1,5 @@
+import time
+
 import ray
 import torch
 from matplotlib import pyplot as plt
@@ -16,7 +18,7 @@ class ASP:
         self.iterations = iterations
         self.improve_data = improve_data
 
-    def execute(self, show_plt=True):
+    def execute(self, show_plt=True, need_quantize=False, improve_speed=False):
         ###########################################################################
         # Asynchronous Parameter Server Training
         # --------------------------------------
@@ -28,10 +30,11 @@ class ASP:
 
         ray.init(ignore_reinit_error=True)
         ps = ParameterServer.remote(1e-2)
-        if self.improve_data:
+        if improve_speed:
             cumputing_powper = [(i + 1) * self.sleep_gap for i in range(self.num_workers)]
             self.data_loaders = self.dataset_factory.build_dataset_with_power(cumputing_powper, shuffle=True)
-        workers = [Worker.remote(i, (i + 1) * self.sleep_gap, self.data_loaders[i]) for i in range(self.num_workers)]
+        workers = [Worker.remote(i, (i + 1) * self.sleep_gap, self.data_loaders[i], (self.num_workers / i))
+                   for i in range(self.num_workers)]
         model = ConvNet()
         test_loader = self.dataset_factory.get_test_loader()
         ###########################################################################
@@ -45,7 +48,10 @@ class ASP:
         gradients = {}
         for worker in workers:
             # 将ps上的参数发送给worker，即获取ps上的参数，即pull,代码层面的通信流是Server--->ASP--->Worker
-            gradients[worker.compute_gradients.remote(current_weights)] = worker
+            current_time = time.time()
+            w, result_time_start = ray.get(current_weights)
+            gradients[worker.compute_gradients.remote(w, current_time, need_quantize,
+                                                      improve_speed)] = worker
         '''
         gradients={ObjectID(7e0a4dfc4c87306fef0a6c22010000c801000000): Actor(Worker, ef0a6c220100), ObjectID(6f53dca1f451ca94f66d17ba010000c801000000): Actor(Worker, f66d17ba0100)}
         list(gradients)=[ObjectID(7e0a4dfc4c87306fef0a6c22010000c801000000), ObjectID(6f53dca1f451ca94f66d17ba010000c801000000)]
@@ -54,6 +60,7 @@ class ASP:
         i = 0
         plt_x = []
         plt_y = []
+        start_train_time = time.time()
         while True:
             '''
             wait(object_ids, num_returns=1, timeout=None),这里传入了所有worker的compute_gradients的任务，
@@ -69,20 +76,30 @@ class ASP:
             返回的worker是计算完成的那个worker，并且计算完成的<ObjectId,worker>会从gradients中删除
             '''
             worker = gradients.pop(ready_gradient_id)
-            #这里相当于是每次worker计算完成之后都进行通信
+            # 这里相当于是每次worker计算完成之后都进行通信
             # 将完成的这个worker的计算结果上传到ps，并得到ps更新后的模型,即进行通信，执行push操作,所以代码层面的通信流是Worker--->ASP--->Server
             if ray.get(ready_gradient_id) is not None:
-                current_weights = ps.apply_gradients.remote(*[ready_gradient_id])
-                gradients[worker.compute_gradients.remote(current_weights)] = worker
+                temp_gradients = []
+                item_gradient, start_time, current_compute_count = ray.get(ready_gradient_id)
+                temp_gradients.append(item_gradient)
+                current_weights = ps.apply_gradients.remote(*temp_gradients)
+                current_time = time.time()
+                weights = ray.get(current_weights)
+
+                gradients[worker.compute_gradients.remote(weights, current_time, need_quantize,
+                                                          improve_speed)] = worker
 
             if i % 10 == 0:
                 # Evaluate the current model after every 10 updates.
                 model.set_weights(ray.get(current_weights))
                 accuracy = self.evaluate(model, test_loader)
-                plt_x.append(i)
+                # plt_x.append(i)
+                plt_x.append(time.time() - start_train_time)
                 plt_y.append(accuracy)
                 print("Iter {}: \taccuracy is {:.1f}".format(i, accuracy))
             i += 1
+            if i >= self.iterations:
+                break
 
         print("Final accuracy is {:.1f}.".format(accuracy))
         ray.shutdown()

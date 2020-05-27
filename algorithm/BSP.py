@@ -18,13 +18,18 @@ class BSP:
         self.dataset_factory = dataset_factory
         self.iterations = iterations
 
-    def execute(self, show_plt=True, improve_comm=False):
+    # improve_comm:是否根据收敛速度实时优化通信频率,comm表示通信
+    # need_quantize:是否通信之前/之后需要量化/反量化
+    # improve_speed：是否需要根据算力分配不同的数据&训练次数
+    def execute(self, show_plt=True, improve_comm=False, need_quantize=False, improve_speed=False):
+        start_train_time = time.time()
         ###########################################################################
         # Synchronous Parameter Server Training
         # -------------------------------------
         # We'll now create a synchronous parameter server training scheme. We'll first
         # instantiate a process for the parameter server, along with multiple
         # workers.
+        plt_iter = []
         plt_x = []
         plt_y = []
         ray.init(ignore_reinit_error=True)
@@ -32,7 +37,12 @@ class BSP:
         初始化ps和workers
         '''
         ps = ParameterServer.remote(1e-2)
-        workers = [Worker.remote(i, (i + 1) * self.sleep_gap, self.data_loaders[i]) for i in range(self.num_workers)]
+        if improve_speed:
+            cumputing_powper = [(i + 1) * self.sleep_gap for i in range(self.num_workers)]
+            self.data_loaders = self.dataset_factory.build_dataset_with_power(cumputing_powper, shuffle=True)
+
+        workers = [Worker.remote(i, (i + 1) * self.sleep_gap, self.data_loaders[i], self.num_workers - i)
+                   for i in range(self.num_workers)]
 
         ###########################################################################
         # We'll also instantiate a model on the driver process to evaluate the test
@@ -54,10 +64,11 @@ class BSP:
         server_to_bsp = []
         pre_acc = 0.0
         acc_gap = 10
-        init_comm_frequency = 10
-        comm_frequency = 10
+        init_comm_frequency = 1
+        comm_frequency = 1
         frequency = []
-        for i in range(self.iterations):
+        i = 0
+        while i < self.iterations:
             # gradients是一个ObjectID的列表，这些ObjectID对应的任务是worker.compute_gradients，传入的参数是全局模型的参数，返回值是本地worker计算后的本地模型的参数值
             '''
             server-->bsp-->worker
@@ -82,7 +93,8 @@ class BSP:
             for index in range(self.num_workers):
                 current_time = time.time()
 
-                gradients_id_item = workers[index].compute_gradients.remote(weights, current_time)
+                gradients_id_item = workers[index].compute_gradients.remote(weights, current_time, need_quantize,
+                                                                            improve_speed)
                 gradients_id.append(gradients_id_item)
             ray.wait(gradients_id, num_returns=len(gradients_id))
 
@@ -97,7 +109,10 @@ class BSP:
                     '''
                     # start_time是worker启动数据传输的时间
                     start_get_time = time.time()
-                    item_gradient, result_time_start = ray.get(id)
+                    item_gradient, result_time_start, current_compute_count = ray.get(id)
+                    i += current_compute_count
+                    i -= 1
+                    # print('current_compute_count:', current_compute_count, 'i:', i)
 
                     if start_get_time > result_time_start:  # 如果调用get之前task已经完成了，那么通信起始时间应该从调用get的时候算
                         cost_time = time.time() - start_get_time
@@ -110,8 +125,8 @@ class BSP:
                 '''
                 bsp-->server
                 '''
-                current_weights = ps.apply_gradients2.remote(time.time(), *gradients)
 
+                current_weights = ps.apply_gradients2.remote(time.time(), need_quantize, *gradients)
             if comm_frequency == 0:
                 if improve_comm:
                     gradients = []
@@ -121,8 +136,9 @@ class BSP:
                         '''
                         # start_time是worker启动数据传输的时间
                         start_get_time = time.time()
-                        item_gradient, result_time_start = ray.get(id)
-
+                        item_gradient, result_time_start, current_compute_count = ray.get(id)
+                        # i += current_compute_count
+                        # i -= 1
                         if start_get_time > result_time_start:  # 如果调用get之前task已经完成了，那么通信起始时间应该从调用get的时候算
                             cost_time = time.time() - start_get_time
                         else:  # 如果调用get之前task还没有完成，那么通信起始时间应该从task最后return之前算
@@ -130,7 +146,7 @@ class BSP:
 
                         worker_to_bsp.append(cost_time)
                         gradients.append(item_gradient)
-                    current_weights = ps.apply_gradients2.remote(time.time(), *gradients)
+                    current_weights = ps.apply_gradients2.remote(time.time(), need_quantize, *gradients)
                 # Evaluate the current model.
                 # 将workers中的参数计算出来然后设置获取当前参数服务器上全局模型的参数
                 # 通信：server-->BSP
@@ -148,30 +164,31 @@ class BSP:
 
                 model.set_weights(weights)
                 accuracy = self.evaluate(model, test_loader)
-                plt_x.append(i)
+                # plt_x.append(i)
+                plt_iter.append(i)
+                plt_x.append(time.time() - start_train_time)
                 plt_y.append(accuracy)
                 if improve_comm:
                     if pre_acc == 0.0:
                         pre_acc = accuracy
-                        comm_frequency = init_comm_frequency
                     elif acc_gap == 0.0:
                         acc_gap = accuracy - pre_acc
                         pre_acc = accuracy
-                        comm_frequency = init_comm_frequency
                     elif accuracy - pre_acc < acc_gap:
                         acc_gap = accuracy - pre_acc
                         pre_acc = accuracy
-                        init_comm_frequency += 10
+                        init_comm_frequency += 1
                         # 减少通信次数
                     else:
                         acc_gap = accuracy - pre_acc
                         pre_acc = accuracy
-                        init_comm_frequency -= 10
+                        init_comm_frequency -= 1
                         if init_comm_frequency <= 0:
                             init_comm_frequency = 1
                         # 增多通信次数
                 comm_frequency = init_comm_frequency
-                print("Iter {}: \taccuracy is {:.1f}".format(i * self.num_workers, accuracy))
+                print("Iter {}: \taccuracy is {:.1f}".format(i, accuracy))
+            i += 1
 
         # print("Final accuracy is {:.1f}.".format(accuracy))
         # Clean up Ray resources and processes before the next example.
@@ -225,6 +242,19 @@ class BSP:
 
         if show_plt:
             plt.title('BSP-numWorkers:' + str(self.num_workers) + 'sleepGap:' + str(self.sleep_gap))
+
+            # np.savetxt('pinlvhou_plt_iter.txt', plt_iter)
+            # np.savetxt('pinlvhou_x.txt', plt_x)
+            # np.savetxt('pinlvhou_y.txt', plt_y)
+
+            # if improve_speed:
+            #     np.savetxt('improve_speed_plt_iter.txt', plt_iter)
+            #     np.savetxt('improve_speed_x.txt', plt_x)
+            #     np.savetxt('improve_speed_y.txt', plt_y)
+            # else:
+            #     np.savetxt('BSP_plt_iter.txt', plt_iter)
+            #     np.savetxt('BSP_x.txt', plt_x)
+            #     np.savetxt('BSP_y.txt', plt_y)
             plt.plot(plt_x, plt_y)
             plt.show()
 
